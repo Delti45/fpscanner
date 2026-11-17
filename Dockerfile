@@ -19,6 +19,7 @@ RUN useradd --system --uid 10001 --create-home --home-dir /home/fp fp \
 COPY --from=build /wheels /wheels
 RUN pip install --no-index --find-links=/wheels "fpscanner[postgres]" && rm -rf /wheels
 COPY docker/entrypoint.sh /usr/local/bin/fp-entrypoint
+RUN chmod +x /usr/local/bin/fp-entrypoint
 
 USER fp
 WORKDIR /data
