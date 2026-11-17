@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fpscanner"
+version = "0.1.0"
+description = "Skaner linii papilarnych: ekstrakcja minutiae, matching 1:1, bezpieczny protokół klient-serwer"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "opencv-python-headless",   # bez GUI: działa w kontenerach bez libGL
+    "cryptography",
+    "PyJWT",
+    "fastapi",
+    "uvicorn",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary,pool]>=3.1"]   # PostgresTemplateRepository
+plots = ["matplotlib"]          # wykresy rozkładów i krzywej DET w evaluate_fvc
+dev = ["pytest", "httpx", "hypothesis", "ruff", "matplotlib"]   # httpx: klient testowy FastAPI
+
+[project.scripts]
+fp-extract = "fpscanner.biometrics.preprocessing:main"
+fp-evaluate = "fpscanner.tools.evaluate_fvc:main"
+fp-provision-dev = "fpscanner.tools.provision_dev:main"
+fp-server = "fpscanner.server.http_app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]            # pytest działa też bez `pip install -e .`
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E741",     # krótkie nazwy (l, O, I) w kodzie numerycznym
+    "B008",     # wywołania w domyślnych argumentach (FastAPI)
+    "B905",     # zip() bez strict=: w kodzie zawsze po sekwencjach równej długości
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "E702", "E731", "B904", "B007"]    # testy: zwięzłe asercje z komentarzami

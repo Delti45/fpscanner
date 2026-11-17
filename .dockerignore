@@ -1,0 +1,23 @@
+.git
+.github
+.venv
+.hypothesis
+.pytest_cache
+.ruff_cache
+**/__pycache__
+*.egg-info
+build
+dist
+# dane, artefakty i sekrety lokalne nie trafiają do obrazu
+data
+dev
+certs
+output
+eval_output
+cache_minutiae
+*.key
+*.env
+# nie potrzebne w obrazie
+tests
+docs
+deploy

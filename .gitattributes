@@ -1,0 +1,9 @@
+# LF w repozytorium i po checkoucie (ważne dla docker/entrypoint.sh na Windows: CRLF psuje skrypt)
+* text=auto eol=lf
+*.sh text eol=lf
+*.docx binary
+*.tif binary
+*.tiff binary
+*.png binary
+*.jpg binary
+*.bmp binary

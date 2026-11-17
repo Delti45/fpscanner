@@ -1,0 +1,30 @@
+.venv
+.pytest_cache
+.vscode
+output
+__pycache__
+eval_output
+cache_minutiae
+
+# pakiet
+*.egg-info/
+build/
+dist/
+
+# dane i artefakty (nie do gita)
+data/*
+!data/.gitkeep
+
+# środowisko deweloperskie: klucze prywatne, sekrety, bazy
+dev/
+certs/
+*.key
+server.env
+
+# narzędzia
+.hypothesis/
+.ruff_cache/
+
+# lokalna konfiguracja (wzór: .env.example)
+.env
+!.env.example
