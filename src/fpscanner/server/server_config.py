@@ -23,6 +23,8 @@ Zmienne (wymagane oznaczono *):
   FP_DEVICES_FILE*        plik JSON z rejestrem urządzeń (patrz fpscanner.tools.provision_dev)
   FP_REQUIRE_MTLS         1/0 (domyślnie 1)
   FP_REQUIRE_PROOF        1/0 (domyślnie 1)
+  FP_REQUIRE_TOTP         1/0 (domyślnie 1): kod TOTP (RFC 6238) w handshake'u; każde urządzenie
+                          w FP_DEVICES_FILE musi wtedy mieć `totp_secret`
   FP_TRUSTED_PROXIES      lista CIDR po przecinku (domyślnie brak => nagłówki ignorowane)
   FP_CERT_HEADER          nagłówek z odciskiem certyfikatu (domyślnie x-client-cert-fingerprint)
   FP_CERT_VERIFY_HEADER   nagłówek z wynikiem weryfikacji (np. x-client-cert-verify)
@@ -111,7 +113,7 @@ def _flag(env, name: str, default: bool) -> bool:
     raise ConfigError(f"{name}: oczekiwano 1/0")
 
 
-def _load_devices(path: str, registry: InMemoryDeviceRegistry) -> None:
+def _load_devices(path: str, registry: InMemoryDeviceRegistry, *, require_totp: bool = False) -> None:
     p = Path(path)
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
@@ -124,9 +126,13 @@ def _load_devices(path: str, registry: InMemoryDeviceRegistry) -> None:
     try:
         for d in data["devices"]:
             fp = d.get("cert_fingerprint")
+            totp_secret = _b64(d["totp_secret"], "totp_secret") if d.get("totp_secret") else None
+            if require_totp and totp_secret is None:
+                raise ConfigError(f"FP_DEVICES_FILE: urządzenie {d['device_id']!r} nie ma totp_secret, "
+                                  "a FP_REQUIRE_TOTP=1")
             registry.register(d["device_id"], secret=_b64(d["secret"], "secret"),
                               cert_fingerprint=normalize_fingerprint(fp) if fp else None,
-                              permissions=d.get("permissions"))
+                              permissions=d.get("permissions"), totp_secret=totp_secret)
     except (KeyError, TypeError, AttributeError, ValueError) as e:
         raise ConfigError(f"FP_DEVICES_FILE: niepoprawny wpis urządzenia ({e})") from None
 
@@ -197,11 +203,12 @@ def build_service(env: Mapping[str, str] | None = None, *,
         _b64(_get(env, "FP_SERVER_SIGNING_KEY"), "FP_SERVER_SIGNING_KEY", 32))
 
     registry = InMemoryDeviceRegistry()
-    _load_devices(_get(env, "FP_DEVICES_FILE"), registry)
+    require_totp = _flag(env, "FP_REQUIRE_TOTP", True)
+    _load_devices(_get(env, "FP_DEVICES_FILE"), registry, require_totp=require_totp)
 
     try:
         policy = DevicePolicy(_flag(env, "FP_REQUIRE_MTLS", True),
-                              _flag(env, "FP_REQUIRE_PROOF", True))
+                              _flag(env, "FP_REQUIRE_PROOF", True), require_totp)
         proxies = tuple(p.strip() for p in env.get("FP_TRUSTED_PROXIES", "").split(",") if p.strip())
         trust = NetworkTrust(
             trusted_proxies=proxies,

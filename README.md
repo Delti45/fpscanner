@@ -10,7 +10,7 @@ szyfrowanie szablonów w bazie). Opis projektu: `docs/Skaner_Linii_Papilarnych.d
 src/fpscanner/
 ├── biometrics/   preprocessing.py (obraz -> minutiae, .tpl), matching.py (dopasowanie 1:1)
 ├── security/     crypto_session, replay_guard, template_vault, vault_transit,
-│                 tls_config, device_auth, session_tokens
+│                 tls_config, device_auth, session_tokens, totp
 ├── server/       api_service (logika endpointów), http_app (adapter FastAPI), wire_protocol,
 │                 template_repository (InMemory/PostgreSQL), server_config (budowa serwisu z FP_* ze środowiska)
 ├── client/       api_client.py (FingerprintClient, HttpsTransport)
@@ -55,6 +55,36 @@ fp-provision-dev --out dev --readers reader-01 --admins admin-01 --local-kek
 
 Odpowiedniki bez instalacji poleceń: `python -m fpscanner.tools.evaluate_fvc ...`,
 `python -m fpscanner.biometrics.preprocessing ...`, `python -m fpscanner.tools.provision_dev ...`.
+
+## Uwierzytelnienie urządzenia: mTLS, dowód HMAC i TOTP
+
+Handshake urządzenia łączy trzy niezależne czynniki (`DevicePolicy`, domyślnie wszystkie włączone):
+
+| Czynnik | Co dowodzi | Czym jest chroniony przed powtórzeniem |
+| --- | --- | --- |
+| mTLS | urządzenie ma klucz prywatny certyfikatu z rejestru | handshake TLS 1.3 |
+| dowód HMAC-SHA256 | zna sekret urządzenia; wiąże `device_id`, klucz efemeryczny, losowość i `ts` | nonce (`client_random`) zajmowany jednorazowo w `ReplayGuard`, okno czasowe 60 s |
+| **TOTP (RFC 6238)** | zna *osobny* sekret TOTP i ma zegar zsynchronizowany z serwerem | jednorazowość kroku (`TotpReplayTracker`) |
+
+**Jak działa TOTP** (`security/totp.py`, zależy tylko od biblioteki standardowej):
+
+- HOTP wg RFC 4226 z licznikiem `T = floor(czas / 30 s)`; domyślnie HMAC-SHA256 i 6 cyfr. Implementację
+  sprawdzają wektory z RFC 4226 (dod. D) i RFC 6238 (dod. B, SHA-1/256/512) w `tests/test_totp.py`.
+- Klient wysyła kod w polu `totp` handshake'u. Sekret TOTP jest **inny** niż sekret dowodu (rejestr odrzuca
+  identyczne), więc wyciek jednego nie daje drugiego czynnika. Każde urządzenie ma go w `devices.json`
+  (`totp_secret`), a `fp-provision-dev` generuje go i zapisuje też w pliku klienta.
+- **Synchronizacja czasu.** Serwer liczy kod z *własnego* zegara (nie ze znacznika `ts` podanego przez
+  klienta) i akceptuje kroki `c-1 … c+1`. Zegar urządzenia spóźniony o więcej niż 30-60 s (zależnie od
+  położenia w kroku) jest odrzucany, nawet gdy `ts` mieści się w oknie 60 s. Zegar spieszący się
+  ogranicza i tak znacznik czasu (tolerancja 5 s).
+- **Jednorazowość** (RFC 6238, §5.2): dla każdego urządzenia serwer pamięta ostatnio przyjęty krok i
+  odrzuca kod z kroku nie nowszego (`409 replay_detected`). Kod jest zużywany dopiero po
+  uwierzytelnieniu pozostałych czynników i zajęciu nonce'a, więc nieudane próby nie spalają kroku
+  prawowitego urządzenia. Powtórzony, przechwycony handshake dostaje `409` już na nonce'ie.
+- Czynnik przedstawiony jest zawsze weryfikowany, także gdy polityka go nie wymaga (jak certyfikat i dowód).
+
+Włączanie: `FP_REQUIRE_TOTP=1` (domyślnie). Serwer nie wystartuje, jeśli któreś urządzenie w
+`FP_DEVICES_FILE` nie ma `totp_secret`. Klient: `FingerprintClient(..., totp_secret=...)`.
 
 ## Uruchomienie za reverse proxy (TLS 1.3 + mTLS)
 
@@ -154,6 +184,10 @@ masowo; `rewrap` z `template_vault` zostaje jako funkcja biblioteczna. Wersję m
 - **Limit prób tylko per urządzenie.** Nie ma blokady per osoba (byłaby DoS-em na konkretną osobę) ani
   limitu handshake'ów per IP (to robi nginx: `limit_req` i mTLS). Atakujący z zarejestrowanym czytnikiem
   ma więc do 50 prób na 5 minut, wspólnych dla wszystkich osób.
+- **Jeden handshake na krok TOTP (30 s) na urządzenie.** To skutek jednorazowości kodu. Klient
+  (`FingerprintClient.connect`) sam czeka do następnego kroku, gdy ten już zużył, więc w praktyce
+  ponowne połączenie tuż po poprzednim trwa do 30 s dłużej. Dotyczy to też benchmarku, który wyłącza TOTP.
+  Stan `TotpReplayTracker` jest w pamięci procesu, jak nonce'y i sesje.
 - **Jeden klucz JWT.** Jego wymiana to restart serwera (tokeny żyją 15 minut).
 - **KEK lokalny** (`FP_KEY_PROVIDER=local`) służy tylko do testów i benchmarków.
 

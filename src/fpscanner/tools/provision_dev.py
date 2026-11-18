@@ -56,7 +56,7 @@ def provision(directory: str | Path, device_ids: list[str], *, admin_ids=(),
     Tworzy środowisko w `directory` i zwraca słownik:
       env                 zmienne dla build_service (same napisy),
       server_public_key   klucz Ed25519 serwera do zapinowania w kliencie (base64url),
-      clients             {id: {secret, cert, key, ca}} dane urządzeń,
+      clients             {id: {secret, totp_secret, cert, key, ca}} dane urządzeń,
       pki                 wynik tls_config.generate_dev_pki,
       env_file, devices_file   ścieżki zapisanych plików.
     `local_kek=True` dodaje KEK-i w zmiennych i FP_KEY_PROVIDER=local (testy, benchmarki);
@@ -82,13 +82,13 @@ def provision(directory: str | Path, device_ids: list[str], *, admin_ids=(),
 
     devices, clients = [], {}
     for dev in all_ids:
-        secret = os.urandom(32)
+        secret, totp_secret = os.urandom(32), os.urandom(32)      # dwa niezależne sekrety
         perms = ADMIN_PERMISSIONS if dev in admin_ids else READER_PERMISSIONS
         info = pki["devices"][dev]
-        devices.append({"device_id": dev, "secret": _b64(secret), "permissions": perms,
-                        "cert_fingerprint": info["fingerprint"]})
-        clients[dev] = {"secret": _b64(secret), "cert": info["cert"], "key": info["key"],
-                        "ca": pki["ca"]}
+        devices.append({"device_id": dev, "secret": _b64(secret), "totp_secret": _b64(totp_secret),
+                        "permissions": perms, "cert_fingerprint": info["fingerprint"]})
+        clients[dev] = {"secret": _b64(secret), "totp_secret": _b64(totp_secret),
+                        "cert": info["cert"], "key": info["key"], "ca": pki["ca"]}
 
     devices_file = _write_secret(d / "devices.json", json.dumps({"devices": devices}, indent=1))
     env = {
@@ -97,6 +97,7 @@ def provision(directory: str | Path, device_ids: list[str], *, admin_ids=(),
         "FP_DEVICES_FILE": devices_file,
         "FP_REQUIRE_MTLS": "1",
         "FP_REQUIRE_PROOF": "1",
+        "FP_REQUIRE_TOTP": "1",
         "FP_BIND_IP": "1" if bind_ip else "0",
     }
     if behind_proxy:

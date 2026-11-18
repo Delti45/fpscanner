@@ -70,7 +70,8 @@ class World:
         tc = TestClient(self.app, client=peer)
         tr = Transport(tc, headers if headers is not None else self.proxy_headers(dev))
         c = FingerprintClient(tr, device_id=dev, server_verify_key=self.pub,
-                              device_secret=b64d(self.out["clients"][dev]["secret"]), **kw)
+                              device_secret=b64d(self.out["clients"][dev]["secret"]),
+                              totp_secret=b64d(self.out["clients"][dev]["totp_secret"]), **kw)
         return c, tr, tc
 
 

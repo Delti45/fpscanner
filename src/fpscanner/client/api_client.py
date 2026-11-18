@@ -18,7 +18,7 @@ Przykład:
     ctx = tls_config.client_ssl_context("ca.pem", "device.pem", "device.key")
     client = FingerprintClient(HttpsTransport("https://localhost:8443", ctx),
                                device_id="reader-01", server_verify_key=pub,
-                               device_secret=secret)
+                               device_secret=secret, totp_secret=totp_secret)
     client.connect()
     client.enroll("alice", minutiae)
     ok = client.verify("alice", minutiae_probe)
@@ -29,6 +29,7 @@ from __future__ import annotations
 import http.client
 import json
 import ssl
+import time
 import urllib.parse
 
 import fpscanner.server.wire_protocol as wp
@@ -44,6 +45,8 @@ from fpscanner.security.crypto_session import (
 )
 from fpscanner.security.device_auth import device_proof
 from fpscanner.security.replay_guard import ReplayGuard, now_ms
+from fpscanner.security.totp import DEFAULT as DEFAULT_TOTP
+from fpscanner.security.totp import TotpConfig, totp
 
 
 class ApiClientError(Exception):
@@ -61,11 +64,15 @@ def _raise_for(status: int, resp) -> None:
 
 class FingerprintClient:
     def __init__(self, transport, *, device_id: str, server_verify_key,
-                 device_secret: bytes | None = None, clock=None):
+                 device_secret: bytes | None = None, totp_secret: bytes | None = None,
+                 totp_config: TotpConfig = DEFAULT_TOTP, clock=None, sleep=None):
         self._t = transport
         self._device_id = device_id
         self._verify_key = server_verify_key
         self._secret = device_secret
+        self._totp_secret, self._totp_cfg = totp_secret, totp_config
+        self._last_totp_step: int | None = None
+        self._sleep = sleep or time.sleep
         self._clock = clock or now_ms
         self._keys: SessionKeys | None = None
         self._token: str | None = None
@@ -76,7 +83,18 @@ class FingerprintClient:
         """Handshake: nowe klucze sesyjne i token. Wcześniejsza sesja jest porzucana."""
         hs = ClientHandshake(self._device_id.encode("utf-8"))
         ts = self._clock()
+        step = None
+        if self._totp_secret is not None:
+            step = self._totp_cfg.counter(ts / 1000)
+            if self._last_totp_step is not None and step <= self._last_totp_step:
+                # serwer przyjmuje kod z danego kroku tylko raz (RFC 6238, §5.2): czekamy na następny
+                self._sleep(self._totp_cfg.seconds_to_next_step(ts / 1000))
+                ts = self._clock()
+                step = self._totp_cfg.counter(ts / 1000)
         body: dict = {"hello": hs.hello.to_dict(), "ts": ts}
+        if self._totp_secret is not None:
+            body["totp"] = totp(self._totp_secret, ts / 1000, self._totp_cfg)
+            self._last_totp_step = step
         if self._secret is not None:
             body["proof"] = _b64e(device_proof(
                 self._secret, device_id=self._device_id, client_pub=hs.hello.client_pub,

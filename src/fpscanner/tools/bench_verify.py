@@ -91,7 +91,9 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         out = provision(tmp, ["reader-01"], local_kek=True)
-        env = {**out["env"], "FP_MAX_FAILURES_DEVICE": "1000000"}
+        # FP_REQUIRE_TOTP=0: benchmark mierzy verify, a wielu klientów jednego urządzenia musiałoby
+        # czekać po 30 s na kolejny krok TOTP (jeden handshake na krok)
+        env = {**out["env"], "FP_MAX_FAILURES_DEVICE": "1000000", "FP_REQUIRE_TOTP": "0"}
         svc, _ = build_service(env)
         info = out["clients"]["reader-01"]
         fp = out["pki"]["devices"]["reader-01"]["fingerprint"]

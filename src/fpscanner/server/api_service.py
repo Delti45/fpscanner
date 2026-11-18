@@ -77,6 +77,8 @@ from fpscanner.security.replay_guard import (
 )
 from fpscanner.security.session_tokens import TokenBindingError, TokenExpired, TokenInvalid, TokenService
 from fpscanner.security.template_vault import VaultError, decrypt_template, encrypt_template
+from fpscanner.security.totp import DEFAULT as DEFAULT_TOTP
+from fpscanner.security.totp import TotpConfig, TotpReplayTracker
 
 log = logging.getLogger("fp.api")
 
@@ -192,12 +194,13 @@ class ApiService:
     def __init__(self, *, tokens: TokenService, devices, policy: DevicePolicy, identity_key,
                  vault_provider, repo, settings: ServiceSettings | None = None, clock=None,
                  sessions: SessionStore | None = None, guard: ReplayGuard | None = None,
-                 match_config: MatchConfig | None = None):
+                 match_config: MatchConfig | None = None, totp_config: TotpConfig = DEFAULT_TOTP):
         self.tokens, self.devices, self.policy = tokens, devices, policy
         self.repo, self.settings = repo, settings or ServiceSettings()
         self.clock = clock or now_ms                               # zwraca milisekundy
         self.sessions = sessions or SessionStore()
         self.guard = guard or ReplayGuard()
+        self.totp_config, self._totp_used = totp_config, TotpReplayTracker()
         self.match_config = match_config or MatchConfig()
         self._identity, self._provider = identity_key, vault_provider
         s = self.settings
@@ -291,7 +294,10 @@ class ApiService:
         if not isinstance(body, dict):
             raise ApiError(400, "invalid_message")
         ts, h, proof = body.get("ts"), body.get("hello"), body.get("proof")
+        totp_code = body.get("totp")
         if not isinstance(ts, int) or isinstance(ts, bool) or ts < 0 or not isinstance(h, dict):
+            raise ApiError(400, "invalid_message")
+        if totp_code is not None and not isinstance(totp_code, str):
             raise ApiError(400, "invalid_message")
         try:
             hello = ClientHello.from_dict(h)
@@ -299,11 +305,11 @@ class ApiService:
             device_id = hello.device_id.decode("utf-8")
         except (CryptoError, UnicodeDecodeError, ValueError):
             raise ApiError(400, "invalid_message") from None
-        return hello, device_id, ts, raw_proof
+        return hello, device_id, ts, raw_proof, totp_code
 
     def handshake(self, body, ctx: RequestContext) -> dict:
         now = self.clock()
-        hello, device_id, ts, proof = self._parse_handshake(body)
+        hello, device_id, ts, proof, totp_code = self._parse_handshake(body)
         ip = normalize_ip(ctx.client_ip)
         if ip is None and self.tokens.bind_ip:
             raise ApiError(400, "client_address_unknown")
@@ -313,10 +319,12 @@ class ApiService:
         except ReplayError as e:
             raise self._replay_error(e) from None
         try:
-            authenticate_device(self.devices.get(device_id), self.policy, proof=proof,
-                                cert_fingerprint=ctx.cert_fingerprint, device_id=device_id,
-                                client_pub=hello.client_pub, client_random=hello.client_random,
-                                timestamp_ms=ts)
+            totp_counter = authenticate_device(
+                self.devices.get(device_id), self.policy, proof=proof,
+                cert_fingerprint=ctx.cert_fingerprint, device_id=device_id,
+                client_pub=hello.client_pub, client_random=hello.client_random,
+                timestamp_ms=ts, totp_code=totp_code, now_s=now // 1000,     # TOTP: czas serwera
+                totp_config=self.totp_config)
         except DeviceAuthError:
             log.warning("handshake odrzucony: urządzenie=%r ip=%s", device_id[:64], ip_key)
             raise ApiError(401, "auth_failed") from None
@@ -324,6 +332,11 @@ class ApiService:
             self.guard.claim_nonce(b"hs:" + hello.device_id, hello.client_random, now)
         except ReplayError as e:
             raise self._replay_error(e) from None
+        # Kod TOTP zużywamy dopiero po uwierzytelnieniu wszystkich czynników i zajęciu nonce'a:
+        # nieudane próby (zły dowód, certyfikat, powtórzony handshake) nie spalają kroku urządzenia.
+        if totp_counter is not None and not self._totp_used.consume(device_id, totp_counter):
+            log.warning("handshake odrzucony: ponowne użycie kodu TOTP, urządzenie=%r", device_id[:64])
+            raise ApiError(409, "replay_detected")
         try:
             hello_out, keys = server_accept(
                 hello, self._identity, now=now,

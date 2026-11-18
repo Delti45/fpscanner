@@ -111,7 +111,7 @@ def make_client(stack, dev, *, cert_of=None, extra_headers=None):
                 return inner.post(path, body, {**headers, **extra_headers})
         transport = Spoofing()
     return FingerprintClient(transport, device_id=dev, server_verify_key=stack["pub"],
-                             device_secret=b64d(own["secret"]))
+                             device_secret=b64d(own["secret"]), totp_secret=b64d(own["totp_secret"]))
 
 
 def test_full_flow_over_tls13_with_mtls(stack):

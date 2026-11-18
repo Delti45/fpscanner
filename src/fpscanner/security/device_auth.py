@@ -4,14 +4,19 @@ Uwierzytelnianie urządzeń (czytników): rejestr, odciski certyfikatów, dowód
 posiadania sekretu oraz bezpieczne ustalanie adresu i certyfikatu klienta
 za reverse proxy.
 
-Dwa niezależne czynniki (konfigurowane przez `DevicePolicy`):
+Trzy niezależne czynniki (konfigurowane przez `DevicePolicy`):
   * mTLS  – certyfikat klienta zweryfikowany przez TLS/proxy; serwer porównuje
             jego odcisk SHA-256 z odciskiem zapisanym w rejestrze urządzeń;
   * dowód – HMAC-SHA256 po sekrecie urządzenia, liczony z pól handshake'u
             (device_id, klucz efemeryczny, losowość klienta, znacznik czasu).
             Podmiana któregokolwiek pola unieważnia dowód, a jednorazowość
-            zapewnia nonce (client_random) zajmowany w ReplayGuard.
-Polityka musi wymagać przynajmniej jednego czynnika.
+            zapewnia nonce (client_random) zajmowany w ReplayGuard;
+  * TOTP  – jednorazowy kod zależny od czasu (RFC 6238) z OSOBNEGO sekretu urządzenia;
+            weryfikowany względem zegara serwera, więc sprawdza też synchronizację czasu.
+            Tutaj kod tylko się weryfikuje (bezstanowo); jednorazowość egzekwuje
+            `totp.TotpReplayTracker` w serwisie, po zajęciu nonce'a handshake'u.
+Polityka musi wymagać przynajmniej jednego czynnika. Czynnik, który został przedstawiony,
+jest zawsze weryfikowany, nawet gdy polityka go nie wymaga.
 
 Zaufanie do nagłówków: odcisk certyfikatu i adres klienta przekazane przez
 proxy (np. `X-Client-Cert-Fingerprint`, `X-Forwarded-For`) są uwzględniane
@@ -35,6 +40,8 @@ import threading
 import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+
+from fpscanner.security import totp as _totp
 
 PERMISSIONS = frozenset({"enroll", "verify", "erase"})
 DEFAULT_PERMISSIONS = frozenset({"enroll", "verify"})     # kasowanie tylko jawnie nadane
@@ -173,10 +180,11 @@ def device_proof(secret: bytes, *, device_id: str, client_pub: bytes, client_ran
 class DevicePolicy:
     require_mtls: bool = True
     require_proof: bool = True
+    require_totp: bool = False         # biblioteka: wyłączone; serwer (FP_REQUIRE_TOTP) włącza domyślnie
 
     def __post_init__(self):
-        if not (self.require_mtls or self.require_proof):
-            raise ValueError("polityka musi wymagać mTLS lub dowodu posiadania sekretu")
+        if not (self.require_mtls or self.require_proof or self.require_totp):
+            raise ValueError("polityka musi wymagać mTLS, dowodu posiadania sekretu lub TOTP")
 
 
 @dataclass(frozen=True)
@@ -186,6 +194,7 @@ class DeviceRecord:
     cert_fingerprint: str | None = None
     permissions: frozenset = DEFAULT_PERMISSIONS
     revoked: bool = False
+    totp_secret: bytes | None = field(default=None, repr=False)
 
     def allows(self, permission: str) -> bool:
         return permission in self.permissions
@@ -203,7 +212,7 @@ class InMemoryDeviceRegistry:
         self._lock = threading.Lock()
 
     def register(self, device_id: str, *, secret: bytes, cert_fingerprint: str | None = None,
-                 permissions=None) -> DeviceRecord:
+                 permissions=None, totp_secret: bytes | None = None) -> DeviceRecord:
         if not isinstance(device_id, str) or not 1 <= len(device_id.encode("utf-8")) <= 64:
             raise ValueError("device_id musi mieć 1–64 bajtów")
         if not isinstance(secret, (bytes, bytearray)) or len(secret) < MIN_SECRET_LEN:
@@ -211,8 +220,14 @@ class InMemoryDeviceRegistry:
         perms = frozenset(DEFAULT_PERMISSIONS if permissions is None else permissions)
         if not perms <= PERMISSIONS:
             raise ValueError(f"nieznane uprawnienia: {sorted(perms - PERMISSIONS)}")
+        if totp_secret is not None:
+            if not isinstance(totp_secret, (bytes, bytearray)) or len(totp_secret) < _totp.MIN_SECRET_LEN:
+                raise ValueError(f"sekret TOTP musi mieć co najmniej {_totp.MIN_SECRET_LEN} bajtów")
+            if bytes(totp_secret) == bytes(secret):
+                raise ValueError("sekret TOTP musi różnić się od sekretu dowodu (dwa niezależne czynniki)")
         fp = _canon_stored(cert_fingerprint) if cert_fingerprint else None
-        rec = DeviceRecord(device_id, bytes(secret), fp, perms)
+        rec = DeviceRecord(device_id, bytes(secret), fp, perms,
+                           totp_secret=None if totp_secret is None else bytes(totp_secret))
         with self._lock:
             if device_id in self._devices:
                 raise ValueError(f"urządzenie {device_id!r} jest już zarejestrowane")
@@ -259,8 +274,16 @@ def check_device_binding(record: DeviceRecord | None, policy: DevicePolicy,
 
 def authenticate_device(record: DeviceRecord | None, policy: DevicePolicy, *,
                         proof: bytes | None, cert_fingerprint: str | None, device_id: str,
-                        client_pub: bytes, client_random: bytes, timestamp_ms: int) -> None:
-    """Pełne uwierzytelnienie w handshake'u: certyfikat + (wymagany) dowód HMAC."""
+                        client_pub: bytes, client_random: bytes, timestamp_ms: int,
+                        totp_code: str | None = None, now_s: int | None = None,
+                        totp_config: _totp.TotpConfig = _totp.DEFAULT) -> int | None:
+    """
+    Pełne uwierzytelnienie w handshake'u: certyfikat + (wymagany) dowód HMAC + (wymagany) TOTP.
+    Zwraca numer kroku TOTP, z którego pochodzi przyjęty kod (albo None, gdy kodu nie podano);
+    wywołujący musi go zużyć w `TotpReplayTracker`, żeby kod był jednorazowy.
+    `now_s` to czas SERWERA w sekundach (nie znacznik z wiadomości klienta): tylko wtedy kod
+    sprawdza synchronizację zegara urządzenia.
+    """
     secret = record.secret if record is not None else b"\x00" * MIN_SECRET_LEN
     expected = device_proof(secret, device_id=device_id, client_pub=client_pub,
                             client_random=client_random, timestamp_ms=timestamp_ms)
@@ -268,9 +291,19 @@ def authenticate_device(record: DeviceRecord | None, policy: DevicePolicy, *,
     if proof is None:
         if policy.require_proof:
             raise DeviceAuthError("uwierzytelnienie urządzenia nie powiodło się")
-        return
-    if not hmac.compare_digest(expected, proof):          # dowód podany: zawsze weryfikowany
+    elif not hmac.compare_digest(expected, proof):        # dowód podany: zawsze weryfikowany
         raise DeviceAuthError("uwierzytelnienie urządzenia nie powiodło się")
+
+    if totp_code is None:
+        if policy.require_totp:
+            raise DeviceAuthError("uwierzytelnienie urządzenia nie powiodło się")
+        return None
+    if now_s is None or record is None or record.totp_secret is None:
+        raise DeviceAuthError("uwierzytelnienie urządzenia nie powiodło się")
+    counter = _totp.verify_totp(record.totp_secret, totp_code, now_s, totp_config)   # podany: zawsze
+    if counter is None:
+        raise DeviceAuthError("uwierzytelnienie urządzenia nie powiodło się")
+    return counter
 
 
 # --------------------------------------------------------------------------- #

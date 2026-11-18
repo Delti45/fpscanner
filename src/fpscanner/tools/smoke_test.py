@@ -44,7 +44,8 @@ def make_client(url: str, client_file: Path) -> FingerprintClient:
     return FingerprintClient(
         HttpsTransport(url, ctx), device_id=info["device_id"],
         server_verify_key=Ed25519PublicKey.from_public_bytes(_b64d(info["server_public_key"])),
-        device_secret=_b64d(info["secret"]))
+        device_secret=_b64d(info["secret"]),
+        totp_secret=_b64d(info["totp_secret"]) if info.get("totp_secret") else None)
 
 
 def run(url: str, client_file: Path, admin_file: Path | None = None,

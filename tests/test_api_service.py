@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 import fpscanner.server.wire_protocol as wp
 from fpscanner.biometrics.preprocessing import Minutia, template_to_bytes
 from fpscanner.client.api_client import ApiClientError, FingerprintClient
-from fpscanner.security.crypto_session import seal
+from fpscanner.security.crypto_session import ClientHandshake, _b64e, seal
 from fpscanner.security.device_auth import (
     DeviceAuthError,
     DevicePolicy,
@@ -37,6 +37,7 @@ from fpscanner.security.session_tokens import (
     TokenService,
 )
 from fpscanner.security.template_vault import LocalKeyProvider, VaultError, decrypt_template
+from fpscanner.security.totp import totp
 from fpscanner.server.api_service import ApiError, ApiService, AttemptLimiter, RequestContext, ServiceSettings
 from fpscanner.server.server_config import ConfigError, build_service
 from fpscanner.server.template_repository import InMemoryTemplateRepository
@@ -272,13 +273,15 @@ def tpl(seed, n=40):
 class Dev:
     fp: str
     secret: bytes
+    totp_secret: bytes | None = None
 
 
 class World:
     pass
 
 
-def make_world(*, policy=None, bind_ip=True, **settings_kw):
+def make_world(*, policy=None, bind_ip=True, totp=False, **settings_kw):
+    """`totp=True`: urządzenia mają sekret TOTP, a domyślna polityka wymaga kodu w handshake'u."""
     w = World()
     w.now = [T0]
     w.clock = lambda: w.now[0]
@@ -286,15 +289,16 @@ def make_world(*, policy=None, bind_ip=True, **settings_kw):
     w.dev = {}
     for name, fp, perms in (("reader-A", FP_A, {"enroll", "verify"}), ("reader-B", FP_B, {"enroll", "verify"}),
                             ("admin-1", FP_C, {"enroll", "verify", "erase"})):
-        secret = os.urandom(32)
-        w.registry.register(name, secret=secret, cert_fingerprint=fp, permissions=perms)
-        w.dev[name] = Dev(fp, secret)
+        secret, totp_secret = os.urandom(32), (os.urandom(32) if totp else None)
+        w.registry.register(name, secret=secret, cert_fingerprint=fp, permissions=perms,
+                            totp_secret=totp_secret)
+        w.dev[name] = Dev(fp, secret, totp_secret)
     w.identity = Ed25519PrivateKey.generate()
     w.provider = LocalKeyProvider.generate()
     w.repo = InMemoryTemplateRepository()
     w.tokens = TokenService(os.urandom(32), bind_ip=bind_ip)
     settings_kw.setdefault("match_threshold", 0.2)       # test: próg wyraźnie ponad szumem losowych szablonów
-    w.svc = ApiService(tokens=w.tokens, devices=w.registry, policy=policy or DevicePolicy(True, True),
+    w.svc = ApiService(tokens=w.tokens, devices=w.registry, policy=policy or DevicePolicy(True, True, totp),
                        identity_key=w.identity, vault_provider=w.provider, repo=w.repo,
                        settings=ServiceSettings(**settings_kw), clock=w.clock)
     return w
@@ -320,12 +324,14 @@ class InProcess:
             return e.status, {"error": e.code}
 
 
-def new_client(w, device="reader-A", *, ip=IP, cert="auto", secret="auto", transport_cls=InProcess):
+def new_client(w, device="reader-A", *, ip=IP, cert="auto", secret="auto", transport_cls=InProcess,
+               totp="auto", sleep=None):
     info = w.dev.get(device)
     tr = transport_cls(w.svc, ip, (info.fp if info else FP_A) if cert == "auto" else cert)
     key = (info.secret if info else os.urandom(32)) if secret == "auto" else secret
+    totp_key = (info.totp_secret if info else None) if totp == "auto" else totp
     c = FingerprintClient(tr, device_id=device, server_verify_key=w.identity.public_key(),
-                          device_secret=key, clock=w.clock)
+                          device_secret=key, totp_secret=totp_key, clock=w.clock, sleep=sleep)
     return c, tr
 
 
@@ -655,13 +661,15 @@ def test_provisioned_environment_builds_working_service():
         cl = out["clients"]["reader-01"]
         secret = base64.urlsafe_b64decode(cl["secret"] + "=" * (-len(cl["secret"]) % 4))
         fp = out["pki"]["devices"]["reader-01"]["fingerprint"]
+        totp_secret = base64.urlsafe_b64decode(cl["totp_secret"] + "=" * (-len(cl["totp_secret"]) % 4))
         c = FingerprintClient(InProcess(svc, IP, fp), device_id="reader-01", server_verify_key=pub,
-                              device_secret=secret)
+                              device_secret=secret, totp_secret=totp_secret)
         c.connect()
         assert c.enroll("alice", tpl(1)) == {"status": "enrolled"}
         assert c.verify("alice", tpl(1)) is True
         wrong = FingerprintClient(InProcess(svc, IP, out["pki"]["devices"]["admin-01"]["fingerprint"]),
-                                  device_id="reader-01", server_verify_key=pub, device_secret=secret)
+                                  device_id="reader-01", server_verify_key=pub, device_secret=secret,
+                                  totp_secret=totp_secret)
         with api_error(401):
             wrong.connect()                                       # cudzy certyfikat z tego samego CA
         assert trust.cert_header == "x-client-cert-fingerprint"
@@ -677,6 +685,173 @@ def test_config_errors_are_reported_clearly():
                        {**env, "FP_ACTIVE_KEK": "nieznany"}):
             with raises(ConfigError):
                 build_service(broken)
+
+
+# ============================= TOTP (RFC 6238) =============================== #
+def raw_handshake(w, device="reader-A", *, ts=T0, totp_at=None, code="auto"):
+    """Handshake zbudowany ręcznie: niezależnie ustawiany znacznik `ts` i chwila liczenia kodu."""
+    info = w.dev[device]
+    hs = ClientHandshake(device.encode())
+    body = {"hello": hs.hello.to_dict(), "ts": ts,
+            "proof": _b64e(device_proof(info.secret, device_id=device, client_pub=hs.hello.client_pub,
+                                        client_random=hs.hello.client_random, timestamp_ms=ts))}
+    if code == "auto":
+        code = totp(info.totp_secret, T0S if totp_at is None else totp_at)
+    if code is not None:
+        body["totp"] = code
+    return InProcess(w.svc, IP, info.fp).post("/v1/handshake", body, {})
+
+
+def test_totp_handshake_succeeds_and_sends_code():
+    w = make_world(totp=True)
+    c, tr = connected(w)
+    path, body, _ = tr.log[0]
+    assert path == "/v1/handshake" and body["totp"] == totp(w.dev["reader-A"].totp_secret, T0S)
+    assert c.enroll("alice", tpl(1)) == {"status": "enrolled"}
+
+
+def test_totp_required_but_missing_or_wrong_is_rejected():
+    w = make_world(totp=True)
+    c, _ = new_client(w, totp=None)
+    with api_error(401, "auth_failed"):
+        c.connect()                                                  # brak czynnika TOTP
+    c, _ = new_client(w, totp=os.urandom(32))
+    with api_error(401, "auth_failed"):
+        c.connect()                                                  # kod z cudzego sekretu
+    assert raw_handshake(w, code=None)[0] == 401
+    for bad in ("12345", "1234567", "abcdef", "١٢٣٤٥٦", " 12345", ""):
+        assert raw_handshake(w, code=bad)[0] == 401, bad            # zły format: nigdy nie przechodzi
+    status, resp = raw_handshake(w, code=123456)                     # liczba zamiast tekstu
+    assert (status, resp["error"]) == (400, "invalid_message")
+
+
+def test_totp_other_devices_code_is_rejected():
+    w = make_world(totp=True)
+    foreign = totp(w.dev["reader-B"].totp_secret, T0S)
+    assert raw_handshake(w, "reader-A", code=foreign)[0] == 401      # kod innego urządzenia
+
+
+def test_totp_replayed_handshake_is_reported_as_replay_not_auth_failure():
+    w = make_world(totp=True)
+    c, tr = connected(w)
+    _, captured, _ = tr.log[0]
+    status, resp = tr.post("/v1/handshake", captured, {})            # dokładny powtórzony handshake
+    assert (status, resp["error"]) == (409, "replay_detected")       # nonce wykrywa replay (nie 401)
+
+
+def test_totp_code_is_single_use_even_with_fresh_nonce_and_proof():
+    w = make_world(totp=True)
+    assert raw_handshake(w)[0] == 200                                # pierwszy handshake w kroku
+    status, resp = raw_handshake(w)                                  # nowy nonce, ważny dowód, ten sam krok
+    assert (status, resp["error"]) == (409, "replay_detected")
+    w.now[0] += 30_000                                               # następny krok TOTP
+    assert raw_handshake(w, ts=w.now[0], totp_at=w.now[0] / 1000)[0] == 200
+    assert raw_handshake(w, ts=w.now[0], totp_at=w.now[0] / 1000)[0] == 409
+    # kod ze starszego kroku po przyjęciu nowszego też jest odrzucony (kroki tylko rosną)
+    assert raw_handshake(w, ts=w.now[0], totp_at=T0S)[0] == 409
+
+
+def test_totp_steps_are_tracked_per_device():
+    w = make_world(totp=True)
+    assert raw_handshake(w, "reader-A")[0] == 200
+    assert raw_handshake(w, "reader-B")[0] == 200                    # inny krok licznika nie dotyczy B
+    assert raw_handshake(w, "reader-A")[0] == 409
+
+
+def test_totp_checks_device_clock_against_server_clock():
+    # `ts` ustawiony poprawnie, rozjeżdża się wyłącznie zegar liczący kod (serwer: T0, krok c)
+    for offset_s, expected in ((-25, 200), (-45, 401), (+25, 200), (+45, 200), (+65, 401)):
+        w = make_world(totp=True)
+        status, _ = raw_handshake(w, totp_at=T0S + offset_s)
+        assert status == expected, (offset_s, status)
+    # zegar urządzenia spóźnia się o 45 s, więc zarówno `ts`, jak i kod pochodzą z tej samej, złej
+    # chwili. Znacznik mieści się w oknie 60 s, ale serwer liczy kod z WŁASNEGO zegara, nie z `ts`
+    w = make_world(totp=True)
+    assert raw_handshake(w, ts=T0 - 45_000, totp_at=T0S - 45)[0] == 401
+    # bez TOTP ten sam rozjazd przechodzi: to TOTP jest tu kontrolą synchronizacji
+    w = make_world(totp=False)
+    assert raw_handshake(w, ts=T0 - 45_000, code=None)[0] == 200
+
+
+def test_totp_client_waits_for_next_step_instead_of_failing():
+    w = make_world(totp=True)
+    waits = []
+
+    def fake_sleep(seconds):
+        waits.append(seconds)
+        w.now[0] += int(seconds * 1000)
+
+    c, tr = new_client(w, sleep=fake_sleep)
+    c.connect()
+    assert waits == []                                               # pierwszy handshake: bez czekania
+    c.connect()                                                      # ten sam krok -> czeka do następnego
+    assert waits == [30.0]
+    codes = [body["totp"] for path, body, _ in tr.log if path == "/v1/handshake"]
+    sec = w.dev["reader-A"].totp_secret
+    assert codes == [totp(sec, T0S), totp(sec, T0S + 30)] and codes[0] != codes[1]
+    assert c.enroll("alice", tpl(1)) == {"status": "enrolled"}       # sesja po drugim handshake działa
+
+
+def test_totp_presented_is_verified_even_when_not_required():
+    w = make_world(totp=True, policy=DevicePolicy(True, True, False))
+    assert raw_handshake(w, code=None)[0] == 200                     # niewymagany i niepodany: OK
+    w2 = make_world(totp=True, policy=DevicePolicy(True, True, False))
+    bad = totp(w2.dev["reader-A"].totp_secret, T0S + 600)            # kod z odległego kroku
+    assert raw_handshake(w2, code=bad)[0] == 401                     # podany => musi być poprawny
+
+
+def test_totp_presented_for_device_without_secret_is_rejected():
+    w = make_world(totp=False)                                       # urządzenia bez sekretu TOTP
+    assert raw_handshake(w, code="123456")[0] == 401
+
+
+def test_policy_and_registry_validation_for_totp():
+    DevicePolicy(require_mtls=False, require_proof=False, require_totp=True)     # sam TOTP wystarczy
+    with raises(ValueError):
+        DevicePolicy(False, False, False)
+    reg = InMemoryDeviceRegistry()
+    secret = os.urandom(32)
+    with raises(ValueError):
+        reg.register("a", secret=secret, totp_secret=b"za-krotki")
+    with raises(ValueError):
+        reg.register("b", secret=secret, totp_secret=secret)         # ten sam sekret = jeden czynnik
+    assert reg.register("c", secret=secret, totp_secret=os.urandom(32)).totp_secret is not None
+
+
+def test_authenticate_device_returns_totp_step_and_requires_code():
+    reg = InMemoryDeviceRegistry()
+    secret, tsec = os.urandom(32), os.urandom(32)
+    rec = reg.register("a", secret=secret, cert_fingerprint=FP_A, totp_secret=tsec)
+    pub, rnd, ts = os.urandom(32), os.urandom(32), T0
+    proof = device_proof(secret, device_id="a", client_pub=pub, client_random=rnd, timestamp_ms=ts)
+    kw = {"proof": proof, "cert_fingerprint": FP_A, "device_id": "a", "client_pub": pub,
+          "client_random": rnd, "timestamp_ms": ts}
+    pol = DevicePolicy(True, True, True)
+    good = totp(tsec, T0S)
+    assert authenticate_device(rec, pol, totp_code=good, now_s=T0S, **kw) == T0S // 30
+    for bad_kw in ({}, {"totp_code": "000000" if good != "000000" else "000001", "now_s": T0S},
+                   {"totp_code": good}, {"totp_code": good, "now_s": T0S + 3600}):
+        with raises(DeviceAuthError):
+            authenticate_device(rec, pol, **bad_kw, **kw)
+    assert authenticate_device(rec, DevicePolicy(True, True, False), **kw) is None
+
+
+def test_server_config_rejects_devices_without_totp_secret_when_required():
+    import json
+
+    from fpscanner.tools.provision_dev import provision
+    with tempfile.TemporaryDirectory() as tmp:
+        out = provision(tmp, ["r"], local_kek=True)
+        env = out["env"]
+        assert env["FP_REQUIRE_TOTP"] == "1"
+        path = env["FP_DEVICES_FILE"]
+        data = json.loads(open(path, encoding="utf-8").read())
+        for d in data["devices"]:
+            d.pop("totp_secret")
+        open(path, "w", encoding="utf-8").write(json.dumps(data))
+        with raises(ConfigError):
+            build_service(env)                                       # TOTP wymagany, a sekretu brak
+        build_service({**env, "FP_REQUIRE_TOTP": "0"})               # po wyłączeniu wymagania: OK
 
 
 if __name__ == "__main__":
