@@ -6,7 +6,7 @@ szyfrowanie szablonów w bazie). Opis projektu: `docs/Skaner_Linii_Papilarnych.d
 
 ## Struktura
 
-```
+```text
 src/fpscanner/
 ├── biometrics/   preprocessing.py (obraz -> minutiae, .tpl), matching.py (dopasowanie 1:1)
 ├── security/     crypto_session, replay_guard, template_vault, vault_transit,
@@ -88,7 +88,7 @@ Włączanie: `FP_REQUIRE_TOTP=1` (domyślnie). Serwer nie wystartuje, jeśli kt�
 
 ## Uruchomienie za reverse proxy (TLS 1.3 + mTLS)
 
-```
+```text
 klient --TLS 1.3 + mTLS--> nginx --HTTP, 127.0.0.1--> uvicorn (http_app)
 ```
 
