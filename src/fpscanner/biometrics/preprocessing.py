@@ -234,8 +234,9 @@ def _zhang_suen(binary: np.ndarray) -> np.ndarray:
 def thin(binary: np.ndarray) -> np.ndarray:
     """Szkielet 1-px: opencv-contrib -> scikit-image -> własny Zhang-Suen."""
     b = (binary > 0).astype(np.uint8)
-    if hasattr(cv2, "ximgproc"):
-        return (cv2.ximgproc.thinning(b * 255) > 0).astype(np.uint8)
+    ximgproc_thinning = getattr(getattr(cv2, "ximgproc", None), "thinning", None)
+    if ximgproc_thinning is not None:      # w OpenCV 5 moduł ximgproc bywa pusty
+        return (ximgproc_thinning(b * 255) > 0).astype(np.uint8)
     try:
         from skimage.morphology import skeletonize
         return skeletonize(b > 0).astype(np.uint8)
@@ -553,6 +554,11 @@ def main() -> None:
                     help="maks. liczba sąsiadów w promieniu (duża liczba = wyłącz)")
     ap.add_argument("--density-radius", type=float, default=Config.density_radius,
                     help="promień filtra gęstości (px)")
+    ap.add_argument("--iso", action="store_true",
+                    help="zapisz też rekord ISO/IEC 19794-2:2005 (<nazwa>.fmr) z wymiarami obrazu")
+    ap.add_argument("--dpi", type=float, default=500, help="rozdzielczość obrazu zapisywana w rekordzie ISO")
+    ap.add_argument("--finger-position", type=int, default=0,
+                    help="pozycja palca w rekordzie ISO (0 nieznany, 1-5 prawa, 6-10 lewa ręka)")
     args = ap.parse_args()
 
     cfg = Config(ridge_period=args.period, border_margin=args.margin,
@@ -573,6 +579,11 @@ def main() -> None:
              "minutiae": [{**asdict(m), "kind": KIND_NAMES[m.kind]}
                           for m in res.minutiae]}, indent=1))
         (args.out / f"{stem}.tpl").write_bytes(template_to_bytes(res.minutiae))
+        if args.iso:
+            from fpscanner.biometrics.iso19794 import minutiae_to_iso  # lokalnie: unikamy cyklu importów
+            (args.out / f"{stem}.fmr").write_bytes(minutiae_to_iso(
+                res.minutiae, width=img.shape[1], height=img.shape[0], dpi=args.dpi,
+                finger_position=args.finger_position))
         if args.debug:
             cv2.imwrite(str(args.out / f"{stem}_debug.png"), debug_image(img, res))
         print(f"{f.name}: {len(res.minutiae)} minutiae  {res.stats}")

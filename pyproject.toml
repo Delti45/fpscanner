@@ -19,12 +19,14 @@ dependencies = [
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary,pool]>=3.1"]   # PostgresTemplateRepository
+xcheck = ["nbis-python"]                    # test zgodności kątów ISO z NBIS (Linux x86_64)
 plots = ["matplotlib"]          # wykresy rozkładów i krzywej DET w evaluate_fvc
 dev = ["pytest", "httpx", "hypothesis", "ruff", "matplotlib"]   # httpx: klient testowy FastAPI
 
 [project.scripts]
 fp-extract = "fpscanner.biometrics.preprocessing:main"
 fp-evaluate = "fpscanner.tools.evaluate_fvc:main"
+fp-iso = "fpscanner.tools.iso_tool:main"
 fp-provision-dev = "fpscanner.tools.provision_dev:main"
 fp-server = "fpscanner.server.http_app:main"
 

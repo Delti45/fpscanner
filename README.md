@@ -8,13 +8,15 @@ szyfrowanie szablonów w bazie). Opis projektu: `docs/Skaner_Linii_Papilarnych.d
 
 ```text
 src/fpscanner/
-├── biometrics/   preprocessing.py (obraz -> minutiae, .tpl), matching.py (dopasowanie 1:1)
+├── biometrics/   preprocessing.py (obraz -> minutiae, .tpl), matching.py (dopasowanie 1:1),
+│                 iso19794.py (rekord ISO/IEC 19794-2:2005: eksport/import)
 ├── security/     crypto_session, replay_guard, template_vault, vault_transit,
 │                 tls_config, device_auth, session_tokens, totp
 ├── server/       api_service (logika endpointów), http_app (adapter FastAPI), wire_protocol,
 │                 template_repository (InMemory/PostgreSQL), server_config (budowa serwisu z FP_* ze środowiska)
 ├── client/       api_client.py (FingerprintClient, HttpsTransport)
 └── tools/        evaluate_fvc (EER/FMR/FNMR), provision_dev (środowisko deweloperskie),
+                  iso_tool (fp-iso: konwersja .tpl <-> ISO 19794-2),
                   nginx_conf (generator konfiguracji reverse proxy),
                   smoke_test (test dymny wdrożenia), bench_verify (benchmark weryfikacji)
 deploy/           nginx.conf (fragment do /etc/nginx/conf.d/, generowany)
@@ -43,6 +45,12 @@ pytest -q
 ```bash
 # ekstrakcja minutiae (pojedynczy plik lub katalog)
 fp-extract data/FVC2002/Db1_b/101_1.tif --debug --out output
+fp-extract skan.png --iso --dpi 500 --finger-position 2 --out output   # + rekord ISO 19794-2 (.fmr)
+
+# konwersja szablonów: .tpl <-> ISO/IEC 19794-2:2005
+fp-iso export output/skan.tpl skan.fmr --width 388 --height 374 --dpi 500
+fp-iso import skan.fmr skan.tpl
+fp-iso info skan.fmr
 
 # ocena jakości na bazie FVC (nazwy plików: <palec>_<odbitka>.tif)
 fp-evaluate data/FVC2002/Db1_b --jobs 4 --out eval_output
@@ -55,6 +63,59 @@ fp-provision-dev --out dev --readers reader-01 --admins admin-01 --local-kek
 
 Odpowiedniki bez instalacji poleceń: `python -m fpscanner.tools.evaluate_fvc ...`,
 `python -m fpscanner.biometrics.preprocessing ...`, `python -m fpscanner.tools.provision_dev ...`.
+
+## Format ISO/IEC 19794-2:2005
+
+`biometrics/iso19794.py` zapisuje i czyta rekord minutii ISO/IEC 19794-2:2005: nagłówek 24 B, widoki
+palców z nagłówkiem 4 B, minutie po 6 B (typ, X, Y, kąt, jakość) i pole długości bloków rozszerzonych.
+Układ bajtów jest opisany w nagłówku modułu.
+
+```python
+from fpscanner.biometrics.iso19794 import minutiae_to_iso, minutiae_from_iso
+record = minutiae_to_iso(minutiae, width=388, height=374, dpi=500, finger_position=2)
+minutiae = minutiae_from_iso(record)            # lista Minutia, gotowa do client.enroll(...)
+```
+
+Serwer przechowuje i przesyła szablony w formacie projektu (`.tpl`). ISO jest tylko na brzegu
+(eksport z ekstrakcji, import z zewnętrznych czytników), więc parser formatu z zewnątrz nie powiększa
+powierzchni ataku serwera.
+
+**Konwencje.** Współrzędne to piksele z początkiem w lewym górnym rogu (Y w dół). Kąt ma jednostkę
+360/256 stopnia, 0 oznacza w prawo, a wartość rośnie przeciwnie do ruchu wskazówek zegara (tak jak widać
+obraz). Zakończenie ma ten sam kąt w ISO i w projekcie (od końca w głąb linii). **Rozwidlenie** w ISO
+wskazuje w głąb doliny między gałęziami, a w projekcie wzdłuż pnia, czyli przeciwnie, więc konwersja obraca
+jego kąt o 180°. Pominięcie tego obniża wynik dopasowania własnego odcisku z 1,0 do ok. 0,2
+(`test_missing_bifurcation_flip_would_break_matching`). Kwantyzacja kąta do 360/256° nie zmienia wyniku
+dopasowania (`test_roundtrip_error_is_bounded_and_matching_is_unchanged`).
+
+**Parser traktuje rekord jako dane niezaufane.** Sprawdza długości przed każdym odczytem, wymaga zgodności
+długości w nagłówku z rozmiarem danych, odrzuca niezerowe bity zarezerwowane, niedozwolone wartości pól,
+powtórzone widoki, nadmiarowe bajty i bloki rozszerzone. Rekord ANSI/INCITS 378-2004 (ten sam znacznik
+i wersja, inna długość i zakres kąta) jest rozpoznawany i odrzucany z osobnym komunikatem. Przyjęty rekord
+ma jedyną reprezentację bajtową (test właściwości: kodowanie po dekodowaniu daje te same bajty).
+
+**Co zostało zweryfikowane i czym.**
+
+| Element | Weryfikacja |
+| --- | --- |
+| Układ nagłówka i pola minutii | streszczenie formatu (CC BY 4.0, templates.machinezoo.com) i rekord wzorcowy złożony ręcznie (`GOLDEN` w testach) |
+| Znacznik i pole długości rekordu | jednorazowo, ręcznie (poza testami): parser 2005 z pakietu `nbis-python` przyjmuje poprawny rekord, a odrzuca zły znacznik i złą długość |
+| Kodowanie minutii (typ, X, Y, kąt, jakość) | jednorazowo, ręcznie (poza testami): bajty eksportu ISO 2011 z NBIS dla obrazu syntetycznego; układ 6 B jest wspólny dla edycji 2005 i 2011 |
+| Kąt i typ zakończenia i rozwidlenia | porównanie z ekstraktorem NBIS na obrazach o znanej geometrii (`tests/test_iso19794_xcheck.py`): kąty zgadzają się w granicach 10° |
+
+**Czego nie zweryfikowano.** Norma jest płatna i nie miałem do niej dostępu, a dostępny w `nbis-python`
+parser 2005 nie zwraca minutii z rekordów 2005, więc pola nagłówka inne niż długość (rozmiar i rozdzielczość
+obrazu, liczba widoków) oraz nagłówek widoku opierają się na streszczeniu formatu, a nie na drugiej
+implementacji. Test porównawczy z NBIS uruchamia się tylko po `pip install -e ".[xcheck]"` (koło dla Linuksa
+x86_64; w CI jest instalowane). Zanim rekord posłuży do wymiany z systemami trzecimi, sprawdź go
+certyfikowanym narzędziem.
+
+**Ograniczenia.** Bloki rozszerzone (liczba linii, rdzenie i delty, jakość stref) są odrzucane, bo ich
+długości w normie opisano niejednoznacznie. Jakość minutii zapisujemy jako 0 („nie podano"): spójność
+orientacji z ekstrakcji nie jest jakością w rozumieniu normy. Jakość widoku to domyślnie 100 (norma nie ma
+wartości „nieznana"). Rekord ma najwyżej 255 minutii (jedno pole bajtowe); większy szablon to błąd, nie
+ciche przycięcie. Minutie typu „inny" mapujemy domyślnie na zakończenia (matcher domyślnie nie porównuje
+typów); `--other skip|error` zmienia to zachowanie.
 
 ## Uwierzytelnienie urządzenia: mTLS, dowód HMAC i TOTP
 

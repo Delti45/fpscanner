@@ -44,7 +44,7 @@ jobs:
           cache: pip
       - name: nginx (test integracyjny proxy)
         run: sudo apt-get update && sudo apt-get install -y nginx-light
-      - run: pip install -e ".[dev,postgres]"
+      - run: pip install -e ".[dev,postgres,xcheck]"
       - run: pytest -q
 
   docker:
