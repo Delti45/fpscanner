@@ -26,7 +26,7 @@ Algorytm:
 Użycie:
     from fpscanner.biometrics.matching import match, match_bytes
     res = match(minutiae_a, minutiae_b)
-    if res.score >= 0.25: ...
+    if res.score >= 0.08: ...
 """
 from __future__ import annotations
 

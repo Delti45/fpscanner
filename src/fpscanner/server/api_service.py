@@ -108,7 +108,7 @@ class RequestContext:
 
 @dataclass(frozen=True)
 class ServiceSettings:
-    match_threshold: float = 0.25            # dobrać z krzywej DET (fpscanner.tools.evaluate_fvc)
+    match_threshold: float = 0.08            # dobrać z krzywej DET (fpscanner.tools.evaluate_fvc)
     return_score: bool = False
     max_failures_per_device: int = 50        # jedyny limit prób: nieudane weryfikacje na urządzenie
     lockout_window_s: int = 300

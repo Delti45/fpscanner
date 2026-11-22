@@ -235,7 +235,8 @@ def main() -> None:
     _add_args(ap, Config, "Parametry preprocessingu")
     _add_args(ap, MatchConfig, "Parametry matchingu")
     args = ap.parse_args()
-
+    args.cache = args.cache / hashlib.md5(str(args.dataset.resolve()).encode()).hexdigest()[:8]
+    
     data = scan_dataset(args.dataset)
     if not data:
         raise SystemExit(f"Brak plików <palec>_<odbitka>.<ext> w {args.dataset}")

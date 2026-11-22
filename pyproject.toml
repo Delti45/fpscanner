@@ -51,3 +51,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E501", "E702", "E731", "B904", "B007"]    # testy: zwięzłe asercje z komentarzami
+
+[tool.mutmut]
+source_paths = [ "src/" ]
+pytest_add_cli_args_test_selection = ["tests/"]
+pytest_add_cli_args = ["--ignore=tests/test_proxy_integration.py"]
+also_copy = ["deploy"]
