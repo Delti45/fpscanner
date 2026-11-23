@@ -148,28 +148,35 @@ def main() -> None:
             results: list[list[float]] = [[] for _ in active]
             errors: list[list[str]] = [[] for _ in active]
 
-            def worker(index: int) -> None:
-                client = active[index]
+            def worker(
+                index: int,
+                _active=active,
+                _deadline=deadline,
+                _results=results,
+                _errors=errors,
+                _worker_count=worker_count,
+            ) -> None:
+                client = _active[index]
                 local_i = index
-                while time.perf_counter() < deadline:
+                while time.perf_counter() < _deadline:
                     k = local_i % len(subjects)
                     started = time.perf_counter()
                     try:
                         matched = client.verify(subjects[k], templates[k])
                         duration = time.perf_counter() - started
-                        results[index].append(duration)
-                        sample_rows.append({"operation": "verify", "workers": worker_count,
+                        _results[index].append(duration)
+                        sample_rows.append({"operation": "verify", "workers": _worker_count,
                                             "device": a.clients[index].stem,
-                                            "sample": len(results[index]),
+                                            "sample": len(_results[index]),
                                             "latency_ms": round(duration * 1000, 3),
                                             "status": "match" if matched else "no_match", "error": ""})
                     except Exception as exc:
                         duration = time.perf_counter() - started
                         message = f"{type(exc).__name__}: {exc}"
-                        errors[index].append(message)
-                        sample_rows.append({"operation": "verify", "workers": worker_count,
+                        _errors[index].append(message)
+                        sample_rows.append({"operation": "verify", "workers": _worker_count,
                                             "device": a.clients[index].stem,
-                                            "sample": len(results[index]) + len(errors[index]),
+                                            "sample": len(_results[index]) + len(_errors[index]),
                                             "latency_ms": round(duration * 1000, 3),
                                             "status": "error", "error": message})
                         if isinstance(exc, ApiClientError):

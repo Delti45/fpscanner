@@ -96,7 +96,7 @@ def render(*, server_cert: str, server_key: str, client_ca: str, listen: str = "
     """
     fields = dict(listen=listen, server_name=server_name, server_cert=server_cert,
                   server_key=server_key, client_ca=client_ca, upstream=upstream,
-                  cert_header=CERT_HEADER, verify_header=VERIFY_HEADER, rate=rate, 
+                  cert_header=CERT_HEADER, verify_header=VERIFY_HEADER, rate=rate,
                   burst=burst)
     if run_dir is None:
         body = _FRAGMENT.format(log_format=_PROD_LOG_FORMAT,
