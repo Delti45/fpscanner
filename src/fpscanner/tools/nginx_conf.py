@@ -28,7 +28,7 @@ CERT_HEADER = "X-Client-Cert"
 VERIFY_HEADER = "X-Client-Cert-Verify"
 
 _FRAGMENT = """\
-{log_format}limit_req_zone $binary_remote_addr zone=fp_api:10m rate=30r/s;
+{log_format}limit_req_zone $binary_remote_addr zone=fp_api:10m rate={rate};
 limit_req_status 429;
 
 server {{
@@ -53,7 +53,7 @@ server {{
 
     location /v1/ {{
         limit_except POST {{ deny all; }}
-        limit_req zone=fp_api burst=60 nodelay;
+        limit_req zone=fp_api burst={burst} nodelay;
 
         proxy_pass              http://{upstream};
         proxy_http_version      1.1;
@@ -84,7 +84,8 @@ _PROD_LOG_FORMAT = (
 
 def render(*, server_cert: str, server_key: str, client_ca: str, listen: str = "443",
            server_name: str = "localhost", upstream: str = "127.0.0.1:8000",
-           run_dir: str | None = None, error_log: str | None = None) -> str:
+           run_dir: str | None = None, error_log: str | None = None,
+           rate: str = "30r/s", burst: int = 60) -> str:
     """
     `run_dir=None`: fragment produkcyjny do /etc/nginx/conf.d/ (logi dostępowe bez
     nagłówków i treści żądań).
@@ -95,7 +96,8 @@ def render(*, server_cert: str, server_key: str, client_ca: str, listen: str = "
     """
     fields = dict(listen=listen, server_name=server_name, server_cert=server_cert,
                   server_key=server_key, client_ca=client_ca, upstream=upstream,
-                  cert_header=CERT_HEADER, verify_header=VERIFY_HEADER)
+                  cert_header=CERT_HEADER, verify_header=VERIFY_HEADER, rate=rate, 
+                  burst=burst)
     if run_dir is None:
         body = _FRAGMENT.format(log_format=_PROD_LOG_FORMAT,
                                 access_log="    access_log /var/log/nginx/fp_access.log fp;\n",

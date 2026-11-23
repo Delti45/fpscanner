@@ -51,7 +51,8 @@ def provision(directory: str | Path, device_ids: list[str], *, admin_ids=(),
               trusted_proxies: tuple = (), behind_proxy: bool = False,
               proxy_port: int = 8443, app_port: int = 8000, proxy_host: str = "127.0.0.1",
               upstream_host: str = "127.0.0.1", server_names: tuple = ("localhost",),
-              nginx_error_log: str | None = None) -> dict:
+              nginx_error_log: str | None = None, nginx_rate: str = "30r/s",
+              nginx_burst: int = 60) -> dict:
     """
     Tworzy środowisko w `directory` i zwraca słownik:
       env                 zmienne dla build_service (same napisy),
@@ -126,7 +127,7 @@ def provision(directory: str | Path, device_ids: list[str], *, admin_ids=(),
         conf = render_nginx(server_cert=pki["server_cert"], server_key=pki["server_key"],
                             client_ca=pki["ca"], listen=f"{proxy_host}:{proxy_port}",
                             upstream=f"{upstream_host}:{app_port}", run_dir=str(run),
-                            error_log=nginx_error_log)
+                            error_log=nginx_error_log, rate=nginx_rate, burst=nginx_burst)
         (d / "nginx.conf").write_text(conf, encoding="utf-8")
         result.update(nginx_conf=str(d / "nginx.conf"), nginx_run_dir=str(run),
                       proxy_url=f"https://localhost:{proxy_port}")
@@ -153,13 +154,16 @@ def main() -> None:
     ap.add_argument("--nginx-error-log", default=None, help="np. /dev/stderr (w kontenerze)")
     ap.add_argument("--server-name", action="append", default=None, metavar="DNS",
                     help="nazwa DNS w certyfikacie serwera (można powtarzać; domyślnie localhost)")
+    ap.add_argument("--nginx-rate", default="30r/s", help="limit żądań nginx, np. 30r/s lub 1000r/s")
+    ap.add_argument("--nginx-burst", type=int, default=60, help="burst nginx")
     a = ap.parse_args()
     out = provision(a.out, a.readers, admin_ids=a.admins, bind_ip=not a.no_bind_ip,
                     local_kek=a.local_kek, trusted_proxies=tuple(a.trusted_proxy),
                     behind_proxy=a.behind_proxy, proxy_port=a.proxy_port, app_port=a.app_port,
                     proxy_host=a.proxy_host, upstream_host=a.upstream_host,
                     server_names=tuple(a.server_name or ["localhost"]),
-                    nginx_error_log=a.nginx_error_log)
+                    nginx_error_log=a.nginx_error_log, nginx_rate=a.nginx_rate,
+                    nginx_burst=a.nginx_burst)
     print(f"Środowisko zapisane w {a.out}/")
     print(f"  zmienne serwera : {out['env_file']}")
     print(f"  rejestr urządzeń: {out['devices_file']}")
