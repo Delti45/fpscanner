@@ -1,0 +1,43 @@
+{
+ "preprocessing": {
+  "target_mean": 100.0,
+  "target_var": 100.0,
+  "seg_block": 16,
+  "seg_min_std": 6.0,
+  "orient_sigma": 7.0,
+  "ridge_period": 8.0,
+  "gabor_sigma": 3.5,
+  "gabor_size": 25,
+  "n_orient": 16,
+  "border_margin": 12,
+  "min_dist": 6.0,
+  "trace_len": 12,
+  "min_branch_len": 6,
+  "min_coherence": 0.2,
+  "density_radius": 15.0,
+  "density_max": 2
+ },
+ "matching": {
+  "dist_tol": 8.0,
+  "angle_tol_deg": 12.0,
+  "match_types": false,
+  "hough_angle_bin_deg": 16.0,
+  "hough_trans_bin": 20.0,
+  "n_candidates": 8,
+  "refine_iters": 2,
+  "score_mode": "total",
+  "overlap_margin": 12.0,
+  "min_overlap_count": 10
+ },
+ "n_images": 800,
+ "n_genuine": 2800,
+ "n_impostor": 4950,
+ "minutiae_mean": 48.0475,
+ "minutiae_min": 20,
+ "EER": 0.0925,
+ "EER_threshold": 0.019172320939346295,
+ "FNMR@FMR=1%": 0.17535714285714285,
+ "FNMR@FMR=0.1%": 0.3489285714285714,
+ "genuine_median": 0.08620109137350518,
+ "impostor_median": 0.009807769261550775
+}

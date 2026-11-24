@@ -6,6 +6,7 @@ wyniki/
 __pycache__
 eval_output
 cache_minutiae
+cache
 
 # pakiet
 *.egg-info/
