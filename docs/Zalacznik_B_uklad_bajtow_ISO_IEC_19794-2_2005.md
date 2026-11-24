@@ -1,5 +1,4 @@
-**ZAŁĄCZNIK B  
-UKŁAD BAJTÓW REKORDU ISO/IEC 19794-2:2005**
+# ZAŁĄCZNIK B: UKŁAD BAJTÓW REKORDU ISO/IEC 19794-2:2005
 
 Załącznik przedstawia układ rekordu minutii ISO/IEC 19794-2:2005 w
 zakresie zaimplementowanym w prototypie fpscanner. Opis dotyczy
@@ -7,7 +6,7 @@ binarnego formatu wymiany danych o minutiach, a nie wewnętrznego formatu
 szablonu projektu (.tpl). Wartości wielobajtowe są zapisywane w
 kolejności big-endian (najbardziej znaczący bajt jako pierwszy).
 
-# B.1. Struktura rekordu
+## B.1. Struktura rekordu
 
 Rekord składa się z 24-bajtowego nagłówka rekordu, jednego lub większej
 liczby nagłówków widoku palca, list minutii przypisanych do widoków oraz
@@ -26,7 +25,7 @@ Dla jednego widoku i N minutii długość rekordu wynosi 24 + 4 + 6·N + 2,
 czyli 30 + 6·N bajtów. Pole długości całego rekordu w nagłówku musi
 odpowiadać rzeczywistej liczbie bajtów.
 
-# B.2. Nagłówek rekordu (24 bajty)
+## B.2. Nagłówek rekordu (24 bajty)
 
 | **Offset** | **Rozmiar** | **Pole**                                                  | **Kodowanie / znaczenie**                                                                                                  |
 |------------|-------------|-----------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|
@@ -47,7 +46,7 @@ kolejności big-endian. W prototypie parser sprawdza m.in. znaczniki,
 zgodność zadeklarowanej długości z długością danych i zerową wartość
 bajtu zarezerwowanego.
 
-# B.3. Nagłówek widoku palca (4 bajty)
+## B.3. Nagłówek widoku palca (4 bajty)
 
 | **Offset względny** | **Rozmiar** | **Pole**                      | **Kodowanie / znaczenie**                                            |
 |---------------------|-------------|-------------------------------|----------------------------------------------------------------------|
@@ -61,7 +60,7 @@ każde. W prototypie kontrolowana jest poprawność pozycji palca i jakości
 widoku. Powtórzenie tej samej pary (pozycja palca, numer widoku) jest
 odrzucane.
 
-# B.4. Struktura pojedynczej minutii (6 bajtów)
+## B.4. Struktura pojedynczej minutii (6 bajtów)
 
 Każda minutia jest kodowana w sześciu bajtach. Pierwsze dwa bajty
 zawierają typ minutii i współrzędną X, kolejne dwa – bity zarezerwowane
@@ -74,7 +73,7 @@ oraz współrzędną Y, a ostatnie dwa bajty – kąt i jakość.
 | 4                   | 1 B         | Angle           | Kąt w jednostkach 360/256 stopnia.                                                                   |
 | 5                   | 1 B         | Minutia Quality | Jakość minutii; 0 oznacza „nie podano”.                                                              |
 
-# B.5. Rozpakowanie pól bitowych
+## B.5. Rozpakowanie pól bitowych
 
 Dla dwóch pierwszych par bajtów należy najpierw złożyć wartości
 16-bitowe w porządku big-endian. Następnie z otrzymanych słów wyodrębnia
@@ -94,7 +93,7 @@ Wartość pola reserved musi wynosić zero. Kod typu 3 jest w implementacji
 niedozwolony. Współrzędne X i Y są wyrażone w pikselach obrazu, z
 początkiem układu w lewym górnym rogu: X rośnie w prawo, a Y w dół.
 
-# B.6. Kodowanie kąta i konwencja kierunku
+## B.6. Kodowanie kąta i konwencja kierunku
 
 Kąt zapisuje się w jednym bajcie jako liczbę całkowitą od 0 do 255.
 Jedna jednostka odpowiada 360/256 stopnia, zatem wartość kąta w
@@ -110,7 +109,7 @@ najbliższej wartości jednostki formatu. Dla minutii typu rozwidlenie
 konwencji kierunku pomiędzy formatem projektu a ISO. Dla zakończenia
 (ridge ending) obrót nie jest wykonywany.
 
-# B.7. Dane rozszerzone i ograniczenia implementacji
+## B.7. Dane rozszerzone i ograniczenia implementacji
 
 Po zapisaniu wszystkich widoków rekord zawiera dwubajtowe pole długości
 danych rozszerzonych. W prototypie pole to ma wartość 0, co oznacza brak
@@ -134,7 +133,7 @@ przeprowadzono weryfikacji certyfikowanym narzędziem zgodności. Przed
 wykorzystaniem rekordów w wymianie z systemami zewnętrznymi zalecana
 jest niezależna walidacja.
 
-# B.8. Różnica między rekordem ISO a szablonem wewnętrznym .tpl
+## B.8. Różnica między rekordem ISO a szablonem wewnętrznym .tpl
 
 Format ISO/IEC 19794-2:2005 jest formatem wymiany danych na granicy
 systemu. Wewnętrzny szablon projektu .tpl ma odmienną strukturę: bajt
@@ -144,7 +143,7 @@ w nim zapisywana. Serwer prototypu przechowuje i przesyła szablony w
 formacie .tpl; konwersja do i z ISO jest realizowana przez moduł
 biometrics/iso19794.py oraz narzędzie fp-iso.
 
-# B.9. Podsumowanie układu
+## B.9. Podsumowanie układu
 
 | **Sekcja**                   | **Długość**   | **Uwagi**                                         |
 |------------------------------|---------------|---------------------------------------------------|
@@ -157,7 +156,7 @@ Dla pojedynczego widoku zawierającego N minutii całkowita długość wynosi
 30 + 6·N bajtów. Dla rekordu wielowidokowego długość należy obliczyć
 jako 24 + suma(4 + 6·Nᵢ dla każdego widoku i) + 2.
 
-# Źródła
+## Źródła
 
 1\. ISO/IEC 19794-2:2005, Information technology — Biometric data
 interchange formats — Part 2: Finger minutiae data.
