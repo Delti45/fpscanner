@@ -264,14 +264,6 @@ python -m fpscanner.tools.bench_verify --threads 1 2 4 8   # przepustowość wer
 GitHub Actions (`.github/workflows/ci.yml`): lint, testy (z nginx) i zbudowanie stosu compose z
 testem dymnym.
 
-## Git
-
-```bash
-git init -b main
-git add -A && git status --short               # sprawdź: bez dev/, *.key, *.env, data/*
-git commit -m "Pierwszy commit"
-```
-
 ## Serwis z wygenerowanego środowiska
 
 ```python
